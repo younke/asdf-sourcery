@@ -46,6 +46,9 @@ sourcery --help
 
 :warning: Refer to [Sourcery docs](https://github.com/krzysztofzablocki/Sourcery) on how to use templates.
 
+Use `$ asdf where sourcery` to locate install path. You can find bundled templates in `Templates` folder.
+
+
 Check [asdf](https://github.com/asdf-vm/asdf) readme for more instructions on how to
 install & manage versions.
 
