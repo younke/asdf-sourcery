@@ -7,14 +7,25 @@ on:
   pull_request:
   schedule:
     - cron: 0 0 * * 5
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   plugin_test:
     name: asdf plugin test (${{ matrix.os }})
     strategy:
+      fail-fast: false
       matrix:
         os:
           - macos-latest
+          # Upstream builds the Linux binary against the Swift 5.10 runtime on
+          # Ubuntu 22.04, so the test runs on the same image.
           - ubuntu-22.04
     runs-on: ${{ matrix.os }}
     steps:
@@ -24,8 +35,7 @@ jobs:
         with:
           swift-version: "5.10"
       - name: asdf_plugin_test
-        uses: asdf-vm/actions/plugin-test@v3
+        # v4 is the first release that supports asdf >= 0.16 (the Go rewrite).
+        uses: asdf-vm/actions/plugin-test@v4
         with:
           command: sourcery --version
-        env:
-          GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
