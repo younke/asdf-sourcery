@@ -16,8 +16,11 @@ case "$platform" in
 macos)
 	release_file="$ASDF_DOWNLOAD_PATH/$TOOL_NAME-$ASDF_INSTALL_VERSION.zip"
 	;;
-ubuntu-22.04)
+linux)
 	release_file="$ASDF_DOWNLOAD_PATH/$TOOL_NAME-$ASDF_INSTALL_VERSION.tar.xz"
+	;;
+*)
+	fail "Unsupported platform: $platform"
 	;;
 esac
 
@@ -27,7 +30,7 @@ case "$platform" in
 macos)
 	unzip "$release_file" -d "$ASDF_DOWNLOAD_PATH" || fail "Could not extract $release_file"
 	;;
-ubuntu-22.04)
+linux)
 	tar -xf "$release_file" -C "$ASDF_DOWNLOAD_PATH" || fail "Could not extract $release_file"
 	;;
 esac

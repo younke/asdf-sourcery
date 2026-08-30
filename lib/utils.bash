@@ -3,6 +3,7 @@
 set -euo pipefail
 
 GH_REPO="https://github.com/krzysztofzablocki/Sourcery"
+GH_API_REPO="https://api.github.com/repos/krzysztofzablocki/Sourcery"
 TOOL_NAME="sourcery"
 TOOL_TEST="sourcery --version"
 
@@ -11,39 +12,42 @@ fail() {
 	exit 1
 }
 
-# Detect platform and return download details
-# Returns: "macos" | "ubuntu-22.04" or fails
+curl_opts=(-fsSL)
+
+# asdf sets GITHUB_API_TOKEN when a plugin runs, mise and GitHub Actions set
+# GITHUB_TOKEN. Either one lifts the anonymous GitHub API rate limit.
+gh_token="${GITHUB_API_TOKEN:-${GITHUB_TOKEN:-}}"
+
+if [ -n "$gh_token" ]; then
+	curl_opts=("${curl_opts[@]}" -H "Authorization: token $gh_token")
+fi
+
+# Detect the platform to install for.
+# Returns: "macos" | "linux", or fails on unsupported platforms.
 get_platform() {
-	local kernel
+	local kernel machine
 	kernel="$(uname -s)"
+	machine="$(uname -m)"
 
 	case "$kernel" in
 	Darwin)
 		echo "macos"
 		;;
 	Linux)
-		# Check if Ubuntu 22.04
-		if [ -f /etc/os-release ]; then
-			# shellcheck source=/dev/null
-			source /etc/os-release
-			if [ "$ID" = "ubuntu" ] && [ "$VERSION_ID" = "22.04" ]; then
-				echo "ubuntu-22.04"
-				return
-			fi
-		fi
-		fail "Unsupported Linux distribution. Only Ubuntu 22.04 is supported."
+		case "$machine" in
+		x86_64 | amd64)
+			echo "linux"
+			;;
+		*)
+			fail "Unsupported Linux architecture: $machine. Upstream publishes x86_64 Linux binaries only."
+			;;
+		esac
 		;;
 	*)
 		fail "Unsupported OS: $kernel"
 		;;
 	esac
 }
-
-curl_opts=(-fsSL)
-
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-	curl_opts=("${curl_opts[@]}" -H "Authorization: token $GITHUB_TOKEN")
-fi
 
 sort_versions() {
 	sed 'h; s/[+-]/./g; s/.p\([[:digit:]]\)/.z\1/; s/$/.z/; G; s/\n/ /' |
@@ -67,27 +71,42 @@ ignore_invalid_versions() {
 	cut -d ' ' -f 6-
 }
 
-# Fetch Ubuntu asset URL from GitHub API
-# Pattern: finds asset matching *ubuntu*22.04*{arch}*.tar.xz
-get_ubuntu_asset_url() {
-	local version="$1"
-	local api_url asset_url arch api_response
+# Query the GitHub API, failing loudly when the request does not succeed so
+# that rate limits and network errors do not surface as "version not found".
+gh_api() {
+	local path="$1"
+	local response
 
-	arch="$(uname -m)"
-	api_url="https://api.github.com/repos/krzysztofzablocki/Sourcery/releases/tags/${version}"
-
-	api_response=$(curl -sL "$api_url" 2>&1)
-
-	asset_url=$(echo "$api_response" |
-		grep -o '"browser_download_url": *"[^"]*ubuntu[^"]*22\.04[^"]*'"${arch}"'[^"]*\.tar\.xz"' |
-		head -1 |
-		sed 's/"browser_download_url": *"\([^"]*\)"/\1/')
-
-	if [ -z "$asset_url" ]; then
-		fail "Could not find Ubuntu 22.04 $arch asset for version $version"
+	if ! response="$(curl "${curl_opts[@]}" "$GH_API_REPO/$path")"; then
+		fail "Could not query the GitHub API at $GH_API_REPO/$path.\nSet GITHUB_API_TOKEN if you are being rate limited."
 	fi
 
-	echo "$asset_url"
+	printf '%s' "$response"
+}
+
+# Find the Linux archive attached to a release. Upstream builds it on Ubuntu,
+# so the file name carries the Ubuntu release it was built on, for example
+# sourcery-2.3.0-ubuntu-22.04.5-lts-jammy-x86_64.tar.xz.
+get_linux_asset_url() {
+	local version="$1"
+	local machine release_json asset_url
+
+	machine="$(uname -m)"
+	release_json="$(gh_api "releases/tags/${version}")"
+
+	asset_url="$(printf '%s\n' "$release_json" |
+		grep -o '"browser_download_url": *"[^"]*"' |
+		sed 's/.*"browser_download_url": *"\([^"]*\)"/\1/' |
+		grep -E '(linux|ubuntu)' |
+		grep -F -- "$machine" |
+		grep -E '\.tar\.xz$' |
+		head -n 1)" || true
+
+	if [ -z "$asset_url" ]; then
+		fail "Could not find a Linux $machine archive for $TOOL_NAME $version.\nUpstream ships Linux binaries for recent releases only."
+	fi
+
+	printf '%s\n' "$asset_url"
 }
 
 download_release() {
@@ -98,14 +117,19 @@ download_release() {
 
 	case "$platform" in
 	macos)
-		url="$GH_REPO/releases/download/${version}/sourcery-${version}.zip"
+		url="$GH_REPO/releases/download/${version}/${TOOL_NAME}-${version}.zip"
 		;;
-	ubuntu-22.04)
-		url="$(get_ubuntu_asset_url "$version")"
+	linux)
+		url="$(get_linux_asset_url "$version")"
+		;;
+	*)
+		fail "Unsupported platform: $platform"
 		;;
 	esac
 
 	echo "* Downloading $TOOL_NAME release $version..."
+	# Release assets redirect to a host that rejects requests carrying an
+	# Authorization header, so they are fetched without one.
 	curl -fsSL -o "$filename" "$url" || fail "Could not download $url"
 }
 
@@ -130,9 +154,12 @@ install_version() {
 			# macOS archive has bin/sourcery
 			cp -r "${ASDF_DOWNLOAD_PATH}/bin/${TOOL_NAME}" "$install_path"
 			;;
-		ubuntu-22.04)
+		linux)
 			# Ubuntu archive has sourcery at root
 			cp -r "${ASDF_DOWNLOAD_PATH}/${TOOL_NAME}" "$install_path"
+			;;
+		*)
+			fail "Unsupported platform: $platform"
 			;;
 		esac
 
