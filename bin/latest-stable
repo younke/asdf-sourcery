@@ -8,28 +8,39 @@ plugin_dir=$(dirname "$(dirname "$current_script_path")")
 # shellcheck source=./lib/utils.bash
 . "${plugin_dir}/lib/utils.bash"
 
+# asdf and mise pass the version prefix to filter by, e.g. "2.2", or nothing
+# at all when asking for the newest version.
+query="${1:-}"
+
 curl_opts=(-sSI)
 
 if [ -n "$gh_token" ]; then
 	curl_opts=("${curl_opts[@]}" -H "Authorization: token $gh_token")
 fi
 
-# curl of REPO/releases/latest is expected to be a 302 to another URL
-# when there are releases redirect_url="REPO/releases/tag/v<VERSION>"
-# anything else (no releases yet, a rate limit, a network error) falls back to
-# the newest tag rather than reporting no version at all
-redirect_url="$(curl "${curl_opts[@]}" "$GH_REPO/releases/latest" |
-	sed -n -e 's|^[Ll]ocation: *||p' | tr -d '\r' | tail -n 1)" || true
-
 version=
-if [[ "$redirect_url" == */releases/tag/* ]]; then
-	version="$(printf "%s\n" "$redirect_url" | sed 's|.*/tag/v\{0,1\}||')"
-else
-	version="$(list_all_versions | sort_versions | tail -n1 | xargs echo)"
+
+if [ -z "$query" ]; then
+	# curl of REPO/releases/latest is expected to be a 302 to
+	# REPO/releases/tag/v<VERSION> when the repository has releases.
+	redirect_url="$(curl "${curl_opts[@]}" "$GH_REPO/releases/latest" |
+		sed -n -e 's|^[Ll]ocation: *||p' | tr -d '\r' | tail -n 1)" || true
+
+	if [[ "$redirect_url" == */releases/tag/* ]]; then
+		version="$(printf "%s\n" "$redirect_url" | sed 's|.*/tag/v\{0,1\}||')"
+	fi
+fi
+
+# Reached when a prefix was asked for, and when the redirect could not be read
+# because the repository has no releases yet, or the request was rate limited
+# or failed. Falling back to the tag list beats reporting no version at all.
+if [ -z "$version" ]; then
+	pattern="^$(printf '%s' "$query" | sed 's/\./\\./g')"
+	version="$(list_all_versions | sort_versions | grep -E "$pattern" | tail -n1 | xargs echo)" || true
 fi
 
 if [ -z "$version" ]; then
-	fail "Could not determine the latest stable version of $TOOL_NAME."
+	fail "Could not determine the latest stable version of $TOOL_NAME${query:+ matching \"$query\"}."
 fi
 
 printf "%s\n" "$version"
