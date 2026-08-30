@@ -29,13 +29,27 @@ jobs:
           - ubuntu-22.04
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
       - name: Install Swift (Ubuntu only)
         if: runner.os == 'Linux'
         uses: swift-actions/setup-swift@v2
         with:
           swift-version: "5.10"
+
       - name: asdf_plugin_test
         # v4 is the first release that supports asdf >= 0.16 (the Go rewrite).
         uses: asdf-vm/actions/plugin-test@v4
         with:
           command: sourcery --version
+
+      # asdf's own `plugin test` stops after installing and never runs the
+      # command it is handed, so the installed binary is exercised here.
+      - name: Run the installed binary
+        shell: bash
+        run: |
+          asdf plugin add sourcery "$GITHUB_WORKSPACE"
+          asdf install sourcery latest
+          version="$(asdf latest sourcery)"
+          "$(asdf where sourcery "$version")/bin/sourcery" --version
