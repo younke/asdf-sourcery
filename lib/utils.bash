@@ -8,7 +8,10 @@ TOOL_NAME="sourcery"
 TOOL_TEST="sourcery --version"
 
 fail() {
-	echo -e "asdf-$TOOL_NAME: $*"
+	# stderr, not stdout: these functions are called inside command
+	# substitutions, which would otherwise capture the message instead of
+	# showing it.
+	echo -e "asdf-$TOOL_NAME: $*" >&2
 	exit 1
 }
 
@@ -25,26 +28,34 @@ fi
 # Detect the platform to install for.
 # Returns: "macos" | "linux", or fails on unsupported platforms.
 get_platform() {
-	local kernel machine
+	local kernel
 	kernel="$(uname -s)"
-	machine="$(uname -m)"
 
 	case "$kernel" in
 	Darwin)
 		echo "macos"
 		;;
 	Linux)
-		case "$machine" in
-		x86_64 | amd64)
-			echo "linux"
-			;;
-		*)
-			fail "Unsupported Linux architecture: $machine. Upstream publishes x86_64 Linux binaries only."
-			;;
-		esac
+		echo "linux"
 		;;
 	*)
 		fail "Unsupported OS: $kernel"
+		;;
+	esac
+}
+
+# Normalise uname -m to the spelling upstream uses in its Linux asset names,
+# so the value that selects an asset is the same one that is validated here.
+get_arch() {
+	local machine
+	machine="$(uname -m)"
+
+	case "$machine" in
+	x86_64 | amd64)
+		echo "x86_64"
+		;;
+	*)
+		fail "Unsupported Linux architecture: $machine. Upstream publishes x86_64 Linux binaries only."
 		;;
 	esac
 }
@@ -89,21 +100,29 @@ gh_api() {
 # sourcery-2.3.0-ubuntu-22.04.5-lts-jammy-x86_64.tar.xz.
 get_linux_asset_url() {
 	local version="$1"
-	local machine release_json asset_url
+	local arch release_json asset_url
 
-	machine="$(uname -m)"
-	release_json="$(gh_api "releases/tags/${version}")"
+	arch="$(get_arch)"
 
+	# gh_api reports its own failure; exit rather than fall through to the
+	# "no such asset" message below, which would misattribute the cause.
+	release_json="$(gh_api "releases/tags/${version}")" || exit 1
+
+	# Sorting keeps the choice independent of the order the API happens to
+	# return assets in. Should upstream ever publish more than one Linux
+	# archive, the lowest Ubuntu release sorts first, which is also the build
+	# linked against the oldest glibc and so the most portable one.
 	asset_url="$(printf '%s\n' "$release_json" |
 		grep -o '"browser_download_url": *"[^"]*"' |
 		sed 's/.*"browser_download_url": *"\([^"]*\)"/\1/' |
 		grep -E '(linux|ubuntu)' |
-		grep -F -- "$machine" |
+		grep -F -- "$arch" |
 		grep -E '\.tar\.xz$' |
+		LC_ALL=C sort |
 		head -n 1)" || true
 
 	if [ -z "$asset_url" ]; then
-		fail "Could not find a Linux $machine archive for $TOOL_NAME $version.\nUpstream ships Linux binaries for recent releases only."
+		fail "Could not find a Linux $arch archive for $TOOL_NAME $version.\nUpstream ships Linux binaries for recent releases only."
 	fi
 
 	printf '%s\n' "$asset_url"
@@ -120,7 +139,7 @@ download_release() {
 		url="$GH_REPO/releases/download/${version}/${TOOL_NAME}-${version}.zip"
 		;;
 	linux)
-		url="$(get_linux_asset_url "$version")"
+		url="$(get_linux_asset_url "$version")" || exit 1
 		;;
 	*)
 		fail "Unsupported platform: $platform"
@@ -166,6 +185,15 @@ install_version() {
 		local tool_cmd
 		tool_cmd="$(echo "$TOOL_TEST" | cut -d' ' -f1)"
 		test -x "$install_path/$tool_cmd" || fail "Expected $install_path/$tool_cmd to be executable."
+
+		# The Linux binary is dynamically linked against the Swift runtime,
+		# which this plugin cannot install. Say so now rather than leave a
+		# binary that fails on every later invocation. Only a warning: the
+		# runtime may still be put on the library path afterwards.
+		if ! "$install_path/$tool_cmd" --version >/dev/null 2>&1; then
+			echo "asdf-$TOOL_NAME: warning: $tool_cmd was installed but does not run here." >&2
+			echo "asdf-$TOOL_NAME: on Linux it needs a Swift 5.10 runtime on the library path." >&2
+		fi
 
 		echo "$TOOL_NAME $version installation was successful!"
 	) || (
