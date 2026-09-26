@@ -38,7 +38,7 @@ jobs:
 
       - name: Install Swift (Ubuntu only)
         if: runner.os == 'Linux'
-        uses: swift-actions/setup-swift@v2
+        uses: swift-actions/setup-swift@v3
         with:
           swift-version: "5.10"
 
